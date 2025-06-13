@@ -34,6 +34,13 @@ def get_contacts(db: Session = Depends(get_db)):
 @router.post("/")
 async def scrape_contacts(sites: schemas.SiteList, db: Session = Depends(get_db)):
     page_assumes = ["","contact", "contact-us", "contactus", "get-in-touch", "support", "help", "contact-8"]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/114.0.0.0 Safari/537.36",
+        "Referer": "https://google.com",
+        "Accept": "text/html"
+    }
 
     data = []
     records = []
@@ -45,12 +52,12 @@ async def scrape_contacts(sites: schemas.SiteList, db: Session = Depends(get_db)
         social_links = []
         for page in page_assumes:
             url = f"{site}/{page}"
-            is_exist = url_exists_get(url)
+            is_exist = await url_exists_get(url, headers)
             # skip, if url does not exist
             if is_exist is False: continue
             urls.append(url)
             # find the contacts
-            result = await scarpe(url)
+            result = await scarpe(url, headers)
             # collect all data
             emails.extend(result['emails'])
             phones.extend(result['phones'])
@@ -67,50 +74,63 @@ async def scrape_contacts(sites: schemas.SiteList, db: Session = Depends(get_db)
         sociallinkStr = ", ".join(social_links)
 
         # new contact
-        new_contact = models.ScrapedContacts(
-            site = site,
-            urls = urlStr,
-            emails = emailStr,
-            phones = phoneStr,
-            social_links = sociallinkStr
-        )
-        db.add(new_contact)
-        db.commit()
-        db.refresh(new_contact)
+        # new_contact = models.ScrapedContacts(
+        #     site = site,
+        #     urls = urlStr,
+        #     emails = emailStr,
+        #     phones = phoneStr,
+        #     social_links = sociallinkStr
+        # )
+        # db.add(new_contact)
+        # db.commit()
+        # db.refresh(new_contact)
 
-        records.append(new_contact.id)
+        # records.append(new_contact.id)
 
-        # data.append({
-        #     "site": site,
-        #     "urls": urls,
-        #     "emails": emails,
-        #     "phones": phones,
-        #     "social_links": social_links
-        # })
-        
+        data.append({
+            "site": site,
+            "urls": urls,
+            "emails": emails,
+            "phones": phones,
+            "social_links": social_links
+        })
 
     return {"message": "Successful!", "status": 1, "data": data, "records": records}
             
 
-def url_exists_get(url):
+async def url_exists_get(url, headers):
     try:
-        response = requests.get(url, allow_redirects=True, timeout=5)
+        response = requests.get(url, headers=headers, allow_redirects=True, timeout=5)
         return response.status_code == 200
     except requests.RequestException:
         return False
 
-async def scarpe(url: str):
+async def scarpe(url: str, headers):
     social_domains = [
         'facebook.com', 'twitter.com', 'linkedin.com',
         'instagram.com', 'youtube.com', 't.me'
     ]
     # Step 1: Fetch the webpage
-    response = requests.get(url)
+    response = requests.get(url, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
     text = soup.get_text(separator=' ', strip=True)
 
+    # pattern = r'''
+    #     [a-zA-Z0-9._%+-]+       # username
+    #     \s*(?:@|\[at\]|\(at\)|\{at\})\s*   # obfuscated @
+    #     [a-zA-Z0-9.-]+\.[a-zA-Z]{2,}      # domain
+    # '''
+
+    pattern = r'''
+        [a-zA-Z0-9._%+-]+                          # username
+        (?:\s*(?:\[dot\]|\(dot\)|\{dot\})\s*[a-zA-Z0-9._%+-]+)*  # handle dot in username
+        \s*(?:@|\[at\]|\(at\)|\{at\})\s*   # at symbol variants
+        [a-zA-Z0-9-]+
+        (?:\s*(?:\.|\[dot\]|\(dot\)|\{dot\})\s*[a-zA-Z]{2,})  # trailing space
+    '''
     # Step 2: Extract emails using regex
-    emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+    # emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
+    emails = re.findall(pattern, text, re.VERBOSE)
 
     # Step 3: Extract phone numbers (basic pattern)
     phones = re.findall(r'\+?\d[\d\s().-]{7,}\d', text)
@@ -122,6 +142,15 @@ async def scarpe(url: str):
     # making unique
     emails = list(set(emails))
     phones = list(set(phones))
+
+    # update emails to correct format
+    def normalize_obfuscated_email(email):
+        email = re.sub(r'\s*(\[at\]|\(at\)|\{at\}|\s+at\s+)\s*', '@', email, flags=re.IGNORECASE)
+        email = re.sub(r'\s*(\[dot\]|\(dot\)|\{dot\}|\s+dot\s+)\s*', '.', email, flags=re.IGNORECASE)
+        email = re.sub(r'\?.*$', '', email, flags=re.IGNORECASE)
+        return email
+
+    emails = [normalize_obfuscated_email(email) for email in emails]
 
     # social media links
     try:
