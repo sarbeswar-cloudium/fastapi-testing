@@ -21,9 +21,11 @@ class ScrapedContacts(Base):
     __tablename__ = "scraped_contacts"
 
     id = Column(Integer, nullable=False, autoincrement=True, primary_key=True)
-    url = Column(String(50), nullable=True)
+    site = Column(String(50), nullable=True)
+    urls = Column(LONGTEXT, nullable=True)
     emails = Column(LONGTEXT, nullable=False)
     phones = Column(LONGTEXT, nullable=True)
+    social_links = Column(LONGTEXT, nullable=True)
     created_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("NOW()"))
     updated_at = Column(TIMESTAMP(timezone=True), nullable=False, server_default=text("NOW()"))
 

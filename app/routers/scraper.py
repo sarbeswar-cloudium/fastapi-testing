@@ -33,39 +33,63 @@ def get_contacts(db: Session = Depends(get_db)):
 
 @router.post("/")
 async def scrape_contacts(sites: schemas.SiteList, db: Session = Depends(get_db)):
-    page_assumes = ["","contact", "contact-us", "contactus", "get-in-touch", "support", "help"]
+    page_assumes = ["","contact", "contact-us", "contactus", "get-in-touch", "support", "help", "contact-8"]
 
     data = []
+    records = []
 
     for site in sites.urls:
+        emails = []
+        phones = []
+        urls = []
+        social_links = []
         for page in page_assumes:
             url = f"{site}/{page}"
             is_exist = url_exists_get(url)
             # skip, if url does not exist
             if is_exist is False: continue
+            urls.append(url)
             # find the contacts
             result = await scarpe(url)
-            # making string
-            emails = result['emails']
-            phones = result['phones']
-            emailStr = ", ".join(emails)
-            phoneStr = ", ".join(phones)
-            # new contact
-            new_contact = models.ScrapedContacts(
-                url = url,
-                emails = emailStr,
-                phones = phoneStr
-            )
-            db.add(new_contact)
-            db.commit()
-            db.refresh(new_contact)
-            # data.append({
-            #     "url": url,
-            #     "emails": result["emails"],
-            #     "phones": result["phones"]
-            # })
+            # collect all data
+            emails.extend(result['emails'])
+            phones.extend(result['phones'])
+            social_links.extend(result['social_links'])
 
-    return {"message": "Successful!", "status": 1, "data": data}
+        # making unique
+        emails = list(set(emails))
+        phones = list(set(phones))
+        social_links = list(set(social_links))
+        # making string
+        urlStr = ", ".join(urls)
+        emailStr = ", ".join(emails)
+        phoneStr = ", ".join(phones)
+        sociallinkStr = ", ".join(social_links)
+
+        # new contact
+        new_contact = models.ScrapedContacts(
+            site = site,
+            urls = urlStr,
+            emails = emailStr,
+            phones = phoneStr,
+            social_links = sociallinkStr
+        )
+        db.add(new_contact)
+        db.commit()
+        db.refresh(new_contact)
+
+        records.append(new_contact.id)
+
+        # data.append({
+        #     "site": site,
+        #     "urls": urls,
+        #     "emails": emails,
+        #     "phones": phones,
+        #     "social_links": social_links
+        # })
+        
+
+    return {"message": "Successful!", "status": 1, "data": data, "records": records}
             
 
 def url_exists_get(url):
@@ -76,10 +100,14 @@ def url_exists_get(url):
         return False
 
 async def scarpe(url: str):
+    social_domains = [
+        'facebook.com', 'twitter.com', 'linkedin.com',
+        'instagram.com', 'youtube.com', 't.me'
+    ]
     # Step 1: Fetch the webpage
     response = requests.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
-    text = soup.get_text()
+    text = soup.get_text(separator=' ', strip=True)
 
     # Step 2: Extract emails using regex
     emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', text)
@@ -88,14 +116,28 @@ async def scarpe(url: str):
     phones = re.findall(r'\+?\d[\d\s().-]{7,}\d', text)
 
     if emails == []:
-        # emails = await scrape_email(url)
         emails = await scrape_email(url)
+
     
     # making unique
     emails = list(set(emails))
     phones = list(set(phones))
 
-    return {"emails": emails, "phones": phones}
+    # social media links
+    try:
+        links = soup.find_all('a', href=True)
+        
+        social_links = []
+        for link in links:
+            href = link['href']
+            if any(domain in href for domain in social_domains):
+                social_links.append(href)
+        
+        social_links = list(set(social_links))  # remove duplicates
+    except Exception as e:
+        return [f"Error: {e}"]
+
+    return {"emails": emails, "phones": phones, "social_links": social_links}
 
 
 # find emails only
@@ -122,20 +164,23 @@ async def scrape_email(url: str):
 
 # download csv data
 @router.get("/download")
-def download_csv(db: Session = Depends(get_db)):
-
+def download_csv(records: list = None, db: Session = Depends(get_db)):
     # Create an in-memory text stream
     output = io.StringIO()
     writer = csv.writer(output)
 
     # Write header
-    writer.writerow(["Url", "Emails", "Phones", "Created At"])
+    writer.writerow(["Web Site", "Contact Url", "Email Address", "Phone Number", "Social Links", "Created At"])
 
     # Write CSV headers and rows
-    contacts = db.query(models.ScrapedContacts).all()
+    contacts = db.query(models.ScrapedContacts)
+    if records is not None:
+        contacts = contacts.filter(models.ScrapedContacts.id in records).all()
+    else:
+        contacts = contacts.all()
 
     for contact in contacts:
-        writer.writerow([contact.url, contact.emails, contact.phones])
+        writer.writerow([contact.site, contact.urls, contact.emails, contact.phones, contact.social_links, contact.created_at])
 
     
     # Reset the stream position to the beginning
@@ -149,3 +194,4 @@ def download_csv(db: Session = Depends(get_db)):
             "Content-Disposition": "attachment; filename=people.csv"
         }
     )
+    
